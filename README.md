@@ -2,143 +2,168 @@
 
 ```python
 """
-PII Redactor as a Python class: schema-aware for 'TP Summary' and regex-based for others.
-
-Usage:
-    redactor = PiiRedactor()
-    redacted_dict, mapping = redactor.process(markdown_tables_dict)
+pii_redactor.py  –  Pure‑stdlib PII redaction helper for IRS consolidated‑report Markdown.
 """
-import re
-from collections import defaultdict, OrderedDict
+from __future__ import annotations
+import re, json
+from dataclasses import dataclass, field
+from collections import OrderedDict, defaultdict
+from typing import Dict, Tuple, List
 
-class PiiRedactor:
-    # Mapping tokens in headers to PII entity labels
-    LABEL_MAP = {
-        'ssn': 'SSN', 'social security': 'SSN',
-        'itin': 'ITIN', 'individual tax': 'ITIN',
-        'ein': 'EIN', 'fed id': 'EIN', 'business id': 'EIN',
-        'dob': 'DOB', 'date of birth': 'DOB',
-        'first name': 'NAME', 'taxpayer name': 'NAME', 'spouse name': 'NAME',
-        'addr': 'ADDRESS', 'address': 'ADDRESS',
-        'city': 'ADDRESS', 'state': 'ADDRESS', 'zip': 'ZIP',
-        'routing': 'ROUTING', 'aba': 'ROUTING',
-        'bank acct': 'BANK_ACCT', 'account #': 'BANK_ACCT',
-        'caf': 'CAF'
-    }
+# ----------------------------------------------------------------------
+# 1.  Configurable label → canonical‑tag map (edit to taste)
+LABEL_MAP = {
+    # SSN / ITIN / EIN
+    "ssn": "SSN",
+    "social security number": "SSN",
+    "itin": "ITIN",
+    "ein": "EIN",
+    # People & dates
+    "taxpayer name": "NAME",
+    "spouse name": "NAME",
+    "name": "NAME",
+    "dob": "DOB",
+    "date of birth": "DOB",
+    # Contact
+    "phone": "PHONE",
+    "phone number": "PHONE",
+    "email": "EMAIL",
+    "address": "ADDRESS",
+    "zip": "ZIP",
+    # Banking
+    "routing": "ROUTING",
+    "routing number": "ROUTING",
+    "bank account": "BANK_ACCT",
+    "account #": "BANK_ACCT",
+    "caf": "CAF",
+}
 
-    # Regex patterns for out-of-place PII detection
-    PII_REGEXES = OrderedDict([
-        ('SSN',     re.compile(r"(?<!\d)\d{3}[- ]?\d{2}[- ]?\d{4}(?!\d)")),
-        ('ITIN',    re.compile(r"(?<!\d)9\d{2}[- ]?8\d[- ]?\d{4}(?!\d)")),
-        ('EIN',     re.compile(r"(?<!\d)\d{2}[- ]?\d{7}(?!\d)")),
-        ('ROUTING', re.compile(r"(?<!\d)\d{9}(?!\d)")),
-        ('ZIP',     re.compile(r"\b\d{5}(?:-\d{4})?\b")),
-        ('DOB_ISO', re.compile(r"\d{4}-\d{2}-\d{2}")),
-        ('DOB',     re.compile(r"(0[1-9]|1[0-2])[\/\-\.](0[1-9]|[12]\d|3[01])[\/\-\.](19|20)\d\d")),
-        ('IP',      re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")),
-    ])
-    # Inline label:value regex (e.g. "SSN: 123-45-6789")
-    LBL_VALUE_RE = re.compile(r"(?i)(ssn|ein|dob)[: ]+(\*{3}[- ]?\*{2}[- ]?\d{4}|\d{3}[- ]?\d{2}[- ]?\d{4}|\d{2}[- ]?\d{7})")
+# ----------------------------------------------------------------------
+# 2.  Regex recognizers for structured PII (after the labeled pass)
+REGEX_PATTERNS = OrderedDict([
+    ("SSN",        r"(?<!\d)(\d{3})[-\s]?(\d{2})[-\s]?(\d{4})(?!\d)"),
+    ("ITIN",       r"(?<!\d)9\d{2}[-\s]?8\d[-\s]?\d{4}(?!\d)"),
+    ("EIN",        r"(?<!\d)\d{2}[-\s]?\d{7}(?!\d)"),
+    ("PHONE",      r"(?<!\d)(?:\+1[-.\s]?)?(?:\(\d{3}\)|\d{3})[-.\s]?\d{3}[-.\s]?\d{4}(?!\d)"),
+    ("ROUTING",    r"(?<!\d)\d{9}(?!\d)"),
+    ("BANK_ACCT",  r"(?i)\b(?:acct(?:\.|ount)?|bank\s*acct\.?|account)[\s:#-]*\d{6,17}\b"),
+    ("DOB",        r"(0[1-9]|1[0-2])[\/\-\.](0[1-9]|[12]\d|3[01])[\/\-\.](19|20)\d\d"),
+    ("ZIP",        r"\b\d{5}(?:-\d{4})?\b"),
+    # add more if needed …
+])
 
-    def __init__(self):
-        # counters and final mapping will be built per run
-        pass
+# ----------------------------------------------------------------------
+TABLE_ROW_RX = re.compile(
+    r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|", re.MULTILINE
+)
 
-    def _placeholder(self, label, counter):
-        idx = counter[label]
-        counter[label] += 1
-        return f"[{label}_{idx}]"
+@dataclass
+class PIIRedactor:
+    label_map: Dict[str, str] = field(default_factory=lambda: LABEL_MAP)
+    regex_patterns: Dict[str, str] = field(default_factory=lambda: REGEX_PATTERNS)
+    placeholder_ctr: defaultdict = field(default_factory=lambda: defaultdict(int))
+    mapping: "OrderedDict[str, str]" = field(default_factory=OrderedDict)
 
-    def process(self, md_dict):
-        """
-        md_dict: dict of sheet_name -> markdown string
-        Returns: (redacted_dict, mapping_dict)
-          redacted_dict: same keys, redacted markdown
-          mapping_dict: OrderedDict placeholder -> original value
-        """
-        counter = defaultdict(int)
-        mapping = OrderedDict()
-        redacted = {}
+    # ----------------------------
+    def _placeholder(self, tag: str) -> str:
+        ph = f"[{tag}_{self.placeholder_ctr[tag]}]"
+        self.placeholder_ctr[tag] += 1
+        return ph
 
-        # 1) Handle TP Summary schema-aware extraction
-        tp_md = md_dict.get('TP Summary', '')
-        redacted['TP Summary'] = self._redact_tp_summary(tp_md, mapping, counter)
+    # ----------------------------
+    def _redact_value(
+        self, text: str, value: str, tag: str
+    ) -> Tuple[str, str]:
+        """Replace *all* occurrences of value with a stable placeholder."""
+        if value in self.mapping.values():
+            # Already seen – reuse existing placeholder
+            ph = next(k for k, v in self.mapping.items() if v == value)
+        else:
+            ph = self._placeholder(tag)
+            self.mapping[ph] = value
+        # simple global replace; could use re.escape if overlap risk
+        return text.replace(value, ph), ph
 
-        # 2) Handle other sheets: regex and inline labels
-        for sheet, text in md_dict.items():
-            if sheet == 'TP Summary':
-                continue
-            redacted[sheet] = self._redact_other(text, mapping, counter)
+    # ----------------------------
+    def _pass1_labeled_tables(self, md_dict: Dict[str, str]) -> Dict[str, str]:
+        out = {}
+        for name, md in md_dict.items():
+            for field, val in TABLE_ROW_RX.findall(md):
+                tag = self.label_map.get(field.strip().lower())
+                if tag and val.strip():
+                    md, _ = self._redact_value(md, val.strip(), tag)
+            out[name] = md
+        return out
 
-        return redacted, mapping
-
-    def _redact_tp_summary(self, text, mapping, counter):
-        """
-        Parses TP Summary markdown table, redacts all PII columns fully.
-        """
-        lines = text.splitlines(keepends=True)
-        # extract header line
-        # assume first non-empty |...| line is header, next is separator
-        hdr_idx = next(i for i,l in enumerate(lines) if l.strip().startswith('|'))
-        headers = [h.strip() for h in lines[hdr_idx].strip('|').split('|')]
-        # identify PII columns
-        pii_cols = set()
-        for idx, hdr in enumerate(headers):
-            low = hdr.lower()
-            for token, ent in self.LABEL_MAP.items():
-                if token in low:
-                    pii_cols.add(idx)
-        # rebuild table
-        out = []
-        for i, l in enumerate(lines):
-            if not l.strip().startswith('|'):
-                out.append(l); continue
-            cells = [c.strip() for c in l.strip('|').split('|')]
-            if i <= hdr_idx+1:  # header or separator
-                out.append(l)
-            else:
-                new = []
-                for idx, cell in enumerate(cells):
-                    if idx in pii_cols and cell:
-                        ph = self._placeholder(self.LABEL_MAP.get(self._find_label(headers[idx].lower()), 'PII'), counter)
-                        mapping[ph] = cell
-                        new.append(ph)
-                    else:
-                        new.append(cell)
-                out.append('|' + '|'.join(new) + '|\n')
-        return ''.join(out)
-
-    def _find_label(self, hdr_lower):
-        for token, ent in self.LABEL_MAP.items():
-            if token in hdr_lower:
-                return token
-        return None
-
-    def _redact_other(self, text, mapping, counter):
-        """
-        Inline label extraction + regex-based out-of-place redaction.
-        """
-        # inline label:value
-        def inline_repl(m):
-            ent = m.group(1).upper()
-            val = m.group(2)
-            ph = self._placeholder(ent, counter)
-            mapping[ph] = val
-            return f"{m.group(1)}:{ph}"
-        text = self.LBL_VALUE_RE.sub(inline_repl, text)
-        # regex scan
-        for ent, rx in self.PII_REGEXES.items():
-            def repl(m):
+    # ----------------------------
+    def _pass2_mirror_known_values(self, md_dict: Dict[str, str]) -> Dict[str, str]:
+        if not self.mapping:
+            return md_dict
+        # Build one big regex of all captured values (longest first)
+        escaped = sorted(map(re.escape, self.mapping.values()), key=len, reverse=True)
+        combined = re.compile("|".join(escaped))
+        out = {}
+        for name, md in md_dict.items():
+            def _sub(m):
                 val = m.group(0)
-                ph = self._placeholder(ent, counter)
-                mapping[ph] = val
+                ph = next(k for k, v in self.mapping.items() if v == val)
                 return ph
-            text = rx.sub(repl, text)
-        return text
+            out[name] = combined.sub(_sub, md)
+        return out
 
-    def restore(self, text, mapping):
-        """Restore placeholders to original values in any text."""
+    # ----------------------------
+    def _pass3_structured_regex(self, md_dict: Dict[str, str]) -> Dict[str, str]:
+        out = {}
+        for name, md in md_dict.items():
+            for tag, pattern in self.regex_patterns.items():
+                rx = re.compile(pattern)
+                for m in rx.finditer(md):
+                    md, _ = self._redact_value(md, m.group(0), tag)
+            out[name] = md
+        return out
+
+    # ----------------------------
+    def redact(self, md_dict: Dict[str, str]) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """
+        Returns (redacted_md_dict, placeholder→value mapping).
+        """
+        step1 = self._pass1_labeled_tables(md_dict)
+        step2 = self._pass2_mirror_known_values(step1)
+        step3 = self._pass3_structured_regex(step2)
+        return step3, self.mapping
+
+    # ----------------------------
+    @staticmethod
+    def unredact(text: str, mapping: Dict[str, str]) -> str:
         for ph, val in mapping.items():
             text = text.replace(ph, val)
         return text
+
+
+# ----------------------------------------------------------------------
+# Example CLI usage ----------------------------------------------------
+if __name__ == "__main__":
+    import pathlib, argparse
+
+    p = argparse.ArgumentParser(description="Redact consolidated‑report Markdown.")
+    p.add_argument("src_dir", help="Directory of *.md files (one per sheet)")
+    p.add_argument("--out", default="out_redacted", help="Output dir for redacted files")
+    args = p.parse_args()
+
+    src = pathlib.Path(args.src_dir)
+    out = pathlib.Path(args.out)
+    out.mkdir(exist_ok=True)
+
+    # Load Markdown files into a dict
+    md_dict = {f.stem: f.read_text() for f in src.glob("*.md")}
+
+    redactor = PIIRedactor()
+    redacted_dict, mapping = redactor.redact(md_dict)
+
+    # Write results
+    for name, txt in redacted_dict.items():
+        (out / f"{name}.md").write_text(txt, newline="\n")
+    (out / "redaction_map.json").write_text(json.dumps(mapping, indent=2))
+
+    print(f"Redacted files in {out}/ – mapping saved to redaction_map.json")
 ```
