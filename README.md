@@ -1,43 +1,43 @@
 ```vba
 Option Explicit
-Sub RunSimplifiedPython()
 
-    '*** 1.  EDIT ONLY THESE TWO LINES *********************************
-    Const PYTHON_EXE  As String = "C:\Program Files\Python311\python.exe"
-    Const SCRIPT_FILE As String = "C:\My Scripts\demo_script.py"
-    '*******************************************************************
+Sub RunPythonDemo()
 
-    Dim tempOut As String, pyCmd As String, fullCmd As String
-    Dim sh As Object, fso As Object, ts As Object, txt As String
+    ' === 1. EDIT THESE THREE LINES ======================================
+    Const PY_EXE   As String = "C:\Program Files\Python\Python312\python.exe"
+    Const PY_FILE  As String = "C:\Users\Noah Taylor\Demo Scripts\simplified_demo.py"
+    Const LOG_FILE As String = Environ$("TEMP") & "\demo_log.txt"
+    ' ====================================================================
 
-    tempOut = Environ$("TEMP") & "\py_output.txt"
+    Dim cmd As String, sh As Object
 
-    '--- Build the Python part (every path individually quoted) --------
-    pyCmd = """" & PYTHON_EXE & """" & " " & """" & SCRIPT_FILE & """"
+    ' Build a single command that    (a) keeps the console visible,
+    '                                (b) runs your script,
+    '                                (c) writes output to log,
+    '                                (d) closes the window when done.
+    cmd = "cmd.exe /k " & _
+          """" & PY_EXE & """ " & _
+          """" & PY_FILE & """ " & _
+          "> """ & LOG_FILE & """ 2>&1 & type """ & LOG_FILE & """ & exit"
 
-    '--- Wrap that for cmd.exe: capture → echo → pause -----------------
-    fullCmd = "cmd /k " & pyCmd & _
-              " > """ & tempOut & """ 2>&1" & _
-              " & type """ & tempOut & """" & _
-              " & pause"
+    ' 1️⃣  RUN visibly so the analyst sees real‑time prints.
+    Shell cmd, vbNormalFocus
 
-    Debug.Print fullCmd      '← **Copy this line into a real CMD window**
+    ' 2️⃣  AFTER the window closes, read the captured text and drop it in D4.
+    With ThisWorkbook.Sheets(1)        ' first sheet = the one with the button
+        .Range("D4").Value = ReadAllText(LOG_FILE)
+        .Range("D4").WrapText = False   ' optional – prevents tall cells
+    End With
 
-    Set sh = CreateObject("WScript.Shell")
-    sh.Run fullCmd, 1, True  '1 = normal window, wait=True (macro blocks)
-
-    '--- Pull the console text back into Excel ------------------------
-    Set fso = CreateObject("Scripting.FileSystemObject")
-    If fso.FileExists(tempOut) Then
-        Set ts = fso.OpenTextFile(tempOut, 1)
-        txt = ts.ReadAll: ts.Close
-        With ThisWorkbook.Sheets("Sheet1").Range("D4")
-            .Value = txt
-            .WrapText = True
-        End With
-        fso.DeleteFile tempOut, True
-    Else
-        MsgBox "Python did not create the log file—check the console for errors.", vbExclamation
-    End If
 End Sub
+
+' Helper to read entire text file into a string
+Private Function ReadAllText(f As String) As String
+    Dim ff As Integer: ff = FreeFile
+    Dim txt As String
+    Open f For Input As #ff
+        txt = Input$(LOF(ff), ff)
+    Close #ff
+    ReadAllText = txt
+End Function
 ```
