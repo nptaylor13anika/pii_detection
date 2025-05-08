@@ -1,26 +1,36 @@
 ```vba
-' Standard Module, e.g., Module1
+' === Module1 ===
 Option Explicit
 
-Private Const PY_EXE   As String = "C:\Python39\python.exe"
-Private Const PY_FILE  As String = "C:\Demos\simplified_script.py"
+Private Const PY_EXE  As String = "C:\Path With Spaces\Python\python.exe"
+Private Const PY_FILE As String = "C:\Another Path\Data Scripts\simplified_script.py"
 
 Sub RunPythonAndDisplay()
-    Dim sh As Object, cmd As String, exec As Object, txt As String
+    Dim sh   As Object
+    Dim exec As Object
+    Dim cmd  As String
+    Dim txt  As String
     
-    ' 1. Build command
-    cmd = """" & PY_EXE & """" & " " & """" & PY_FILE & """"
+    Set sh = CreateObject("WScript.Shell")
     
-    ' 2. Launch & capture StdOut (silent window)
-    Set sh = CreateObject("WScript.Shell")                            ' :contentReference[oaicite:3]{index=3}
-    Set exec = sh.Exec("cmd /c " & cmd)                               ' /c auto‑closes the hidden cmd
-
-    Do While exec.Status = 0: DoEvents: Loop                          ' wait ‑ status 0 = running
-    txt = exec.StdOut.ReadAll                                         ' get all output lines at once
+    '--- 1. Build and launch -----------------------------------------------
+    cmd = """" & PY_EXE & """ """ & PY_FILE & """"      'A: direct call
+    Set exec = sh.Exec(cmd)                             ':contentReference[oaicite:4]{index=4}
     
-    ' 3. Drop result into B2 of this sheet
+    '--- 2. Wait for completion (MSDN loop) --------------------------------
+    Do While exec.Status = 0                            '0 = running
+        DoEvents                                        'keeps Excel responsive
+    Loop                                                ':contentReference[oaicite:5]{index=5}
+    
+    '--- 3. Read both StdOut and StdErr -------------------------------
+    txt = exec.StdOut.ReadAll & exec.StdErr.ReadAll     'catch silent errors
+    
+    If Len(txt) = 0 Then txt = "(no output ‑ check paths or script errors)"
+    
+    '--- 4. Show in sheet ---------------------------------------------------
     With ThisWorkbook.Worksheets("Demo")
-        .Range("B2").Value = txt                                      ' :contentReference[oaicite:4]{index=4}
+        .Range("B2").Value = txt                        ':contentReference[oaicite:6]{index=6}
     End With
 End Sub
+
 ```
