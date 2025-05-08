@@ -1,46 +1,24 @@
-# pii_detection
+' Standard Module, e.g., Module1
+Option Explicit
 
-```python
-# ----------------------------------------------
-# color_print.py
-# ----------------------------------------------
-def color_print(text: str, color: str = "reset", *, end: str = "\n", flush: bool = False) -> None:
-    """
-    Print *text* in a specified *color* on an ANSI‑capable terminal.
+Private Const PY_EXE   As String = "C:\Python39\python.exe"
+Private Const PY_FILE  As String = "C:\Demos\simplified_script.py"
 
-    Parameters
-    ----------
-    text   : str
-        The message you want to display.
-    color  : str
-        Any key from the `colors` dict below (case‑insensitive).
-        Unknown keys silently fall back to 'reset' (no color).
-    end    : str, optional
-        What to print after *text* (just like the built‑in print).
-    flush  : bool, optional
-        Whether to forcibly flush the output buffer.
-    """
-    colors = {
-        # standard 8
-        "black": 30,   "red": 31,      "green": 32,     "yellow": 33,
-        "blue": 34,    "magenta": 35,  "cyan": 36,      "white": 37,
-        # bright/high‑intensity 8 (add 60)
-        "bright_black": 90,  "bright_red": 91,     "bright_green": 92,
-        "bright_yellow": 93, "bright_blue": 94,    "bright_magenta": 95,
-        "bright_cyan": 96,   "bright_white": 97,
-        # reset / default
-        "reset": 0
-    }
+Sub RunPythonAndDisplay()
+    Dim sh As Object, cmd As String, exec As Object, txt As String
+    
+    ' 1. Build command
+    cmd = """" & PY_EXE & """" & " " & """" & PY_FILE & """"
+    
+    ' 2. Launch & capture StdOut (silent window)
+    Set sh = CreateObject("WScript.Shell")                            ' :contentReference[oaicite:3]{index=3}
+    Set exec = sh.Exec("cmd /c " & cmd)                               ' /c auto‑closes the hidden cmd
 
-    code = colors.get(color.lower(), 0)          # default to “reset”
-    # \033 is ESC, “[<code>m” selects the color, “[0m” resets it again
-    print(f"\033[{code}m{text}\033[0m", end=end, flush=flush)
-
-# -----------------------------------------------------------------
-# EXAMPLES ---------------------------------------------------------
-if __name__ == "__main__":
-    color_print("Error!", "red")
-    color_print("Success!", "green")
-    color_print("Heads‑up:", "bright_yellow", end=" ")
-    color_print("something notable")
-```
+    Do While exec.Status = 0: DoEvents: Loop                          ' wait ‑ status 0 = running
+    txt = exec.StdOut.ReadAll                                         ' get all output lines at once
+    
+    ' 3. Drop result into B2 of this sheet
+    With ThisWorkbook.Worksheets("Demo")
+        .Range("B2").Value = txt                                      ' :contentReference[oaicite:4]{index=4}
+    End With
+End Sub
