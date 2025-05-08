@@ -1,34 +1,61 @@
 ```vba
-Sub RunPythonShowOutput()
-    Dim pythonExe   As String
-    Dim scriptPath  As String
-    Dim summaryFile As String
-    Dim wsh         As Object
-    Dim fileNum     As Integer
-    Dim outputText  As String
+Sub RunPythonAndPopulateDict()
+    Dim pythonExe  As String
+    Dim scriptPath As String
+    Dim shell      As Object
+    Dim proc       As Object
+    Dim allText    As String
+    Dim dictText   As String
+    Dim reBlock    As New RegExp
+    Dim reKV       As New RegExp
+    Dim blockMatch As MatchCollection
+    Dim kvMatches  As MatchCollection
+    Dim i          As Long
     
-    ' 1. Configure paths (wrap in triple quotes for spaces) 
-    pythonExe   = """" & "C:\Program Files\Python39\python.exe" & """"    ' :contentReference[oaicite:7]{index=7}
-    scriptPath  = """" & "C:\Path With Spaces\script.py" & """"           ' :contentReference[oaicite:8]{index=8}
-    summaryFile = "C:\Path With Spaces\output_summary.txt"
+    ' --- 1. Configure your paths (wrap in quotes if they contain spaces) ---
+    pythonExe  = """" & "C:\Path With Spaces\python.exe" & """"
+    scriptPath = """" & "C:\Path With Spaces\script.py" & """"
     
-    ' 2. Delete old summary, if any
-    If Dir(summaryFile) <> "" Then Kill summaryFile                        ' :contentReference[oaicite:9]{index=9}
+    ' --- 2. Launch Python and grab everything it prints ---
+    Set shell = CreateObject("WScript.Shell")
+    Set proc  = shell.Exec(pythonExe & " " & scriptPath)
+    Do While Not proc.StdOut.AtEndOfStream
+        allText = allText & proc.StdOut.ReadLine & vbCrLf
+    Loop
     
-    ' 3. Run Python in visible console, wait until it finishes
-    Set wsh = CreateObject("WScript.Shell")
-    ' The Run method signature: Run(command As String, windowStyle As Integer, waitOnReturn As Boolean)
-    ' vbNormalFocus = 1; True waits for completion :contentReference[oaicite:10]{index=10}
-    wsh.Run pythonExe & " " & scriptPath, 1, True                        ' :contentReference[oaicite:11]{index=11}
+    ' --- 3. Extract only the JSON-dict block between your markers ---
+    With reBlock
+        .Pattern   = "<<RESULT_START>>(.*)<<RESULT_END>>"
+        .Global    = False
+        .MultiLine = True
+    End With
+    If reBlock.Test(allText) Then
+        Set blockMatch = reBlock.Execute(allText)
+        dictText = blockMatch(0).SubMatches(0)
+    Else
+        MsgBox "Could not find RESULT block in Python output.", vbExclamation
+        Exit Sub
+    End If
     
-    ' 4. Read the entire summary file into a string
-    fileNum = FreeFile
-    Open summaryFile For Input As #fileNum
-    ' Input$(LOF(fileNum), fileNum) reads all characters at once :contentReference[oaicite:12]{index=12}
-    outputText = Input$(LOF(fileNum), fileNum)
-    Close #fileNum
+    ' --- 4. Find each "key":"value" pair inside that JSON string ---
+    With reKV
+        ' Captures "key":"value" blocks; handles escaped quotes if needed
+        .Pattern   = """([^""]+)"":"?"?([^""]+)""?"
+        .Global    = True
+        .MultiLine = False
+    End With
+    Set kvMatches = reKV.Execute(dictText)
     
-    ' 5. Display the text in cell D4 on Sheet1
-    ThisWorkbook.Sheets("Sheet1").Range("D4").Value = outputText
+    ' --- 5. Dump into the "output" sheet, starting at row 1 (A=keys, B=values) ---
+    With ThisWorkbook.Sheets("output")
+        .Cells.ClearContents
+        i = 1
+        Dim m As Match
+        For Each m In kvMatches
+            .Cells(i, 1).Value = m.SubMatches(0)  ' the key
+            .Cells(i, 2).Value = m.SubMatches(1)  ' the value
+            i = i + 1
+        Next m
+    End With
 End Sub
 ```
