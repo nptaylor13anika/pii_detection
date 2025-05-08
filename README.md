@@ -3,42 +3,39 @@ Option Explicit
 
 Sub RunSimplifiedPython()
 
-    Dim shell As Object
-    Dim pythonExe As String, scriptPath As String, tempOut As String
-    Dim cmd As String, fso As Object, ts As Object, outputText As String
-
-    ' ===== EDIT THESE TWO LINES =====
-    pythonExe = "C:\Python311\python.exe"          ' 1) full path to python.exe
-    scriptPath = ThisWorkbook.Path & "\demo_script.py" ' 2) your script name
-    ' =================================
+    Const PYTHON_EXE As String = "C:\Program Files\Python311\python.exe"   ' <‑‑ adjust
+    Const SCRIPT_FILE As String = "C:\My Scripts\demo_script.py"          ' <‑‑ adjust
+    Dim tempOut As String, cmd As String, shell As Object
+    Dim fso As Object, ts As Object, outputText As String
 
     tempOut = Environ$("TEMP") & "\py_output.txt"
 
-    ' Build a command that
-    '   • opens a visible cmd window (style 1)
-    '   • runs the script, redirecting all output to tempOut
-    '   • echoes the file so you see the lines scroll in that same window
-    cmd = "cmd /c """ & pythonExe & """ """ & scriptPath & _
-          """ > """ & tempOut & """ 2>&1 & type """ & tempOut & """"
+    ' ---- Build a fully‑quoted command string ----
+    cmd = "cmd /k " & _
+          """" & PYTHON_EXE & """" & " " & _
+          """" & SCRIPT_FILE & """" & " " & _
+          "> " & """" & tempOut & """" & " 2>&1 " & _
+          "& type " & """" & tempOut & """" & _
+          " & pause"                   ' <-- remove ‘& pause’ after it works
 
     Set shell = CreateObject("WScript.Shell")
+    shell.Run cmd, 1, True             ' windowstyle 1 = normal, wait = True
 
-    ' Run:  windowstyle = 1 (normal window), wait = True (macro pauses)
-    shell.Run cmd, 1, True
-
-    ' ===== Pull the output back into Excel =====
+    ' ---- Read the output back into Excel ----
     Set fso = CreateObject("Scripting.FileSystemObject")
     If fso.FileExists(tempOut) Then
         Set ts = fso.OpenTextFile(tempOut, 1)
         outputText = ts.ReadAll
         ts.Close
-        ' Dump into D4 of the sheet that owns the button
         With ThisWorkbook.Sheets("Sheet1").Range("D4")
             .Value = outputText
             .WrapText = True
         End With
-        ' Optional clean‑up
+        ' comment out the next line while debugging if you want to inspect the file
         fso.DeleteFile tempOut, True
+    Else
+        MsgBox "Python did not create the output file." & vbCrLf & _
+               "Check the console window for error messages.", vbExclamation
     End If
 
 End Sub
