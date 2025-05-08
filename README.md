@@ -1,27 +1,45 @@
 ```vba
-' === Module1 ===
 Option Explicit
 
-Private Const PY_FILE  As String = "C:\Path With Spaces\simplified_script.py"
-Private Const LOG_FILE As String = "C:\Temp\py_run_log.txt"
+Sub RunSimplifiedPython()
 
-Sub RunPythonVisibleAndCapture()
-    Dim wsh As Object, cmd As String, fso As Object, txt As String
-    
-    ' 1) Build PowerShell command:
-    '    -NoExit keeps window open, -NoProfile starts fast,
-    '    python -u streams unbuffered, Tee-Object mirrors to file.
-    cmd = "powershell.exe -NoProfile -NoExit -Command " & _
-          """python -u """"& '" & PY_FILE & "' & """" 2>&1 " & _
-          "| Tee-Object -FilePath '" & LOG_FILE & "'"""
-    
-    ' 2) Launch visible & wait
-    Set wsh = CreateObject("WScript.Shell")
-    wsh.Run cmd, 1, True          '1 = show window, True = wait :contentReference[oaicite:4]{index=4}
-    
-    ' 3) Pull log into D4
+    Dim shell As Object
+    Dim pythonExe As String, scriptPath As String, tempOut As String
+    Dim cmd As String, fso As Object, ts As Object, outputText As String
+
+    ' ===== EDIT THESE TWO LINES =====
+    pythonExe = "C:\Python311\python.exe"          ' 1) full path to python.exe
+    scriptPath = ThisWorkbook.Path & "\demo_script.py" ' 2) your script name
+    ' =================================
+
+    tempOut = Environ$("TEMP") & "\py_output.txt"
+
+    ' Build a command that
+    '   • opens a visible cmd window (style 1)
+    '   • runs the script, redirecting all output to tempOut
+    '   • echoes the file so you see the lines scroll in that same window
+    cmd = "cmd /c """ & pythonExe & """ """ & scriptPath & _
+          """ > """ & tempOut & """ 2>&1 & type """ & tempOut & """"
+
+    Set shell = CreateObject("WScript.Shell")
+
+    ' Run:  windowstyle = 1 (normal window), wait = True (macro pauses)
+    shell.Run cmd, 1, True
+
+    ' ===== Pull the output back into Excel =====
     Set fso = CreateObject("Scripting.FileSystemObject")
-    txt = fso.OpenTextFile(LOG_FILE, 1).ReadAll         :contentReference[oaicite:5]{index=5}
-    ThisWorkbook.Worksheets("Demo").Range("D4").Value = txt
+    If fso.FileExists(tempOut) Then
+        Set ts = fso.OpenTextFile(tempOut, 1)
+        outputText = ts.ReadAll
+        ts.Close
+        ' Dump into D4 of the sheet that owns the button
+        With ThisWorkbook.Sheets("Sheet1").Range("D4")
+            .Value = outputText
+            .WrapText = True
+        End With
+        ' Optional clean‑up
+        fso.DeleteFile tempOut, True
+    End If
+
 End Sub
 ```
