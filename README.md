@@ -1,36 +1,40 @@
 ```vba
-' === Module1 ===
+'=== Module1 ================================================================
 Option Explicit
 
-Private Const PY_EXE  As String = "C:\Path With Spaces\Python\python.exe"
-Private Const PY_FILE As String = "C:\Another Path\Data Scripts\simplified_script.py"
+Private Const PY_EXE   As String = "C:\Path With Spaces\python.exe"
+Private Const PY_FILE  As String = "C:\Path With Spaces\simplified_script.py"
+Private Const LOG_FILE As String = "C:\Temp\py_demo_log.txt"
 
-Sub RunPythonAndDisplay()
-    Dim sh   As Object
-    Dim exec As Object
-    Dim cmd  As String
-    Dim txt  As String
+'––– WinAPI declarations –––––––––––––––––––––––––––––––––––––––––––––––––––
+Private Declare PtrSafe Function OpenProcess Lib "kernel32" ( _
+        ByVal dwDesiredAccess As Long, ByVal bInheritHandle As Long, _
+        ByVal dwProcessId As Long) As LongPtr
+Private Declare PtrSafe Function WaitForSingleObject Lib "kernel32" ( _
+        ByVal hHandle As LongPtr, ByVal dwMilliseconds As Long) As Long
+Private Declare PtrSafe Function CloseHandle Lib "kernel32" ( _
+        ByVal hObject As LongPtr) As Long
+
+Sub RunPythonVisibleAndCapture()
+    Dim cmd As String, procID As Long, hProc As LongPtr
+    Dim FSO As Object, txt As String
+    Const INFINITE As Long = &HFFFFFFFF
     
-    Set sh = CreateObject("WScript.Shell")
+    '1) Build PowerShell + Tee command (quotes survive spaces)
+    cmd = "powershell.exe -NoExit -Command ""python -u " & _
+          "'" & PY_FILE & "' 2>&1 | Tee-Object -FilePath '" & LOG_FILE & "'"""
     
-    '--- 1. Build and launch -----------------------------------------------
-    cmd = """" & PY_EXE & """ """ & PY_FILE & """"      'A: direct call
-    Set exec = sh.Exec(cmd)                             ':contentReference[oaicite:4]{index=4}
+    '2) Launch visible console and get process ID
+    procID = Shell(cmd, vbNormalFocus)                    'visible window :contentReference[oaicite:5]{index=5}
     
-    '--- 2. Wait for completion (MSDN loop) --------------------------------
-    Do While exec.Status = 0                            '0 = running
-        DoEvents                                        'keeps Excel responsive
-    Loop                                                ':contentReference[oaicite:5]{index=5}
+    '3) Wait for window to close (user can read/scroll)   :contentReference[oaicite:6]{index=6}
+    hProc = OpenProcess(&H100000, 0, procID)               'SYNCHRONIZE access
+    Call WaitForSingleObject(hProc, INFINITE)
+    Call CloseHandle(hProc)
     
-    '--- 3. Read both StdOut and StdErr -------------------------------
-    txt = exec.StdOut.ReadAll & exec.StdErr.ReadAll     'catch silent errors
-    
-    If Len(txt) = 0 Then txt = "(no output ‑ check paths or script errors)"
-    
-    '--- 4. Show in sheet ---------------------------------------------------
-    With ThisWorkbook.Worksheets("Demo")
-        .Range("B2").Value = txt                        ':contentReference[oaicite:6]{index=6}
-    End With
+    '4) Read the log file and paste into D4               :contentReference[oaicite:7]{index=7}
+    Set FSO = CreateObject("Scripting.FileSystemObject")
+    txt = FSO.OpenTextFile(LOG_FILE).ReadAll
+    ThisWorkbook.Worksheets("Demo").Range("D4").Value = txt
 End Sub
-
 ```
