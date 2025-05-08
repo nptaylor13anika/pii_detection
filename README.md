@@ -1,3 +1,4 @@
+```vba
 ' Standard Module, e.g., Module1
 Option Explicit
 
@@ -22,3 +23,4 @@ Sub RunPythonAndDisplay()
         .Range("B2").Value = txt                                      ' :contentReference[oaicite:4]{index=4}
     End With
 End Sub
+```
