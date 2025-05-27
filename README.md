@@ -1,76 +1,149 @@
 ```python
+"""
+Copy a template block from one workbook into the top of **every** sheet in
+another workbook, preserving:
+
+• Cell values
+• Basic cell styles (font, fill, border, alignment, number‑format)
+• Merged cells that live inside the copied block
+• *Row heights* of the template rows
+• Row heights of the original target sheet (openpyxl shifts them for us)
+
+Usage (adjust the paths/range to suit):
+
+    insert_template_block(
+        src_path="template.xlsx",
+        src_sheet="Header",
+        src_range="A1:L4",
+        tgt_path="report.xlsx",
+        out_path="report_with_header.xlsx",
+        blank_rows=3,          # empty rows after the header
+        copy_style=True,       # include formatting
+    )
+"""
+
 from pathlib import Path
-from typing import Tuple
+from copy import copy
+from typing import List, Tuple
 
 from openpyxl import load_workbook
 from openpyxl.utils import range_boundaries
 from openpyxl.worksheet.worksheet import Worksheet
-from copy import copy 
+from openpyxl.worksheet.cell_range import CellRange
 
-def copy_block(src_ws: Worksheet, src_range: str) -> Tuple[list[list], list]:
+
+# --------------------------------------------------------------------------- #
+#  Helpers                                                                    #
+# --------------------------------------------------------------------------- #
+
+def _copy_block(src_ws: Worksheet, src_range: str) -> Tuple[
+    List[List], List[CellRange], List[float | None], int, int
+]:
     """
-    Extract the values **and** cell objects (for styling) from `src_range`
-    and return (values, merged_ranges) where
+    Slice `src_range` (e.g. "A1:L4") out of `src_ws` **once** and return:
 
-      values = [ [cell1, cell2, …], … ]  (2‑D list, row‑major)
-      merged_ranges = [openpyxl.worksheet.cell_range.CellRange, …]
+        rows         → 2‑D list of *Cell* objects (for style/value access)
+        merges       → list of CellRange objects fully inside the range
+        row_heights  → list of floats / None for each template row
+        min_row, min_col → top‑left coordinate of the block (for merge offset)
+
+    Everything downstream can run on these Python objects without re‑reading
+    the workbook.
     """
     min_col, min_row, max_col, max_row = range_boundaries(src_range)
-    rows = []
-    for r in src_ws.iter_rows(
+
+    # --- capture the cells ---
+    rows: List[List] = []
+    for row in src_ws.iter_rows(
         min_row=min_row, max_row=max_row,
         min_col=min_col, max_col=max_col,
     ):
-        rows.append([c for c in r])          # keep full cell objects
+        rows.append([cell for cell in row])          # keep *cell* objects
 
-    # merged ranges entirely inside the block
-    within_block = []
-    for cr in src_ws.merged_cells.ranges:
-        a, b, c, d = cr.bounds
-        if a >= min_col and c <= max_col and b >= min_row and d <= max_row:
-            within_block.append(cr)
-    return rows, within_block
+    # --- capture merged ranges that live wholly inside the block ---
+    merges = [
+        cr for cr in src_ws.merged_cells.ranges
+        if cr.min_col >= min_col and cr.max_col <= max_col
+        and cr.min_row >= min_row and cr.max_row <= max_row
+    ]
+
+    # --- capture row heights ---
+    row_heights: List[float | None] = []
+    for r in range(min_row, max_row + 1):
+        dim = src_ws.row_dimensions.get(r)
+        row_heights.append(dim.height if (dim and dim.height is not None) else None)
+
+    return rows, merges, row_heights, min_row, min_col
 
 
-def paste_block(
-        ws,
-        rows,
-        merges,
-        blank_rows,
-        start_row: int = 1,
-        start_col: int = 1,
-        copy_style: bool = True,
-    ):
-        n_rows = len(rows)
-        total_ins = n_rows + blank_rows
-        ws.insert_rows(start_row, total_ins)
-    
-        for r_off, src_row in enumerate(rows):
-            dest_r = start_row + r_off
-            for c_off, src_cell in enumerate(src_row):
-                dest_c = start_col + c_off
-                tgt = ws.cell(dest_r, dest_c, value=src_cell.value)
-    
-                if copy_style:
-                    # ‑‑‑ Make *copies* so they’re hashable ‑‑‑
-                    tgt.font          = copy(src_cell.font)
-                    tgt.fill          = copy(src_cell.fill)
-                    tgt.border        = copy(src_cell.border)
-                    tgt.alignment     = copy(src_cell.alignment)
-                    tgt.number_format = src_cell.number_format  # already a str
-    
-        # Re‑create merged cells (unchanged)
-        for cr in merges:
-            a, b, c, d = cr.bounds
-            ws.merge_cells(
-                start_row=start_row + (b - cr.min_row),
-                start_column=start_col + (a - cr.min_col),
-                end_row=start_row + (d - cr.min_row),
-                end_column=start_col + (c - cr.min_col),
-            )
+def _paste_block(
+    ws: Worksheet,
+    *,
+    rows: List[List],
+    merges: List[CellRange],
+    row_heights: List[float | None],
+    src_origin: Tuple[int, int],
+    blank_rows: int,
+    start_row: int,
+    start_col: int,
+    copy_style: bool = True,
+) -> None:
+    """
+    Insert the template block into `ws` beginning at (start_row, start_col).
 
+    • Inserts `len(rows) + blank_rows` rows so existing data shifts downward.
+    • Writes cell values (and styles if `copy_style=True`).
+    • Copies row heights for the template rows.
+    • Re‑creates merged cells inside the new block.
+    """
+    n_rows = len(rows)
+    total_insert = n_rows + blank_rows
+
+    # 1️⃣  Shift everything down to make room
+    ws.insert_rows(start_row, total_insert)
+
+    # 2️⃣  Write the template rows and copy row heights / styles
+    for r_off, src_row in enumerate(rows):
+        dest_r = start_row + r_off
+
+        # 2a. Row height
+        if row_heights[r_off] is not None:
+            rd = ws.row_dimensions[dest_r]
+            rd.height = row_heights[r_off]
+            rd.customHeight = True
+
+        # 2b. Cell values (+ styles)
+        for c_off, src_cell in enumerate(src_row):
+            dest_c = start_col + c_off
+            tgt = ws.cell(dest_r, dest_c, value=src_cell.value)
+
+            if copy_style:
+                tgt.font          = copy(src_cell.font)
+                tgt.fill          = copy(src_cell.fill)
+                tgt.border        = copy(src_cell.border)
+                tgt.alignment     = copy(src_cell.alignment)
+                tgt.number_format = src_cell.number_format  # already str
+
+    # 3️⃣  Re‑create merged cells
+    src_min_row, src_min_col = src_origin
+    for cr in merges:
+        row_shift = cr.min_row - src_min_row
+        col_shift = cr.min_col - src_min_col
+
+        ws.merge_cells(
+            start_row=start_row + row_shift,
+            start_column=start_col + col_shift,
+            end_row=start_row + row_shift + (cr.max_row - cr.min_row),
+            end_column=start_col + col_shift + (cr.max_col - cr.min_col),
+        )
+
+
+# --------------------------------------------------------------------------- #
+#  Public wrapper                                                             #
+# --------------------------------------------------------------------------- #
 
 def insert_template_block(
+    *,
     src_path: str | Path,
     src_sheet: str,
     src_range: str,
@@ -78,30 +151,56 @@ def insert_template_block(
     out_path: str | Path | None = None,
     blank_rows: int = 2,
     copy_style: bool = True,
-):
-    """High‑level helper tying everything together."""
+    start_row: int = 1,
+    start_col: int = 1,
+) -> None:
+    """
+    High‑level convenience wrapper.
+
+    • `src_path`, `src_sheet`, `src_range` define the template block.
+    • The block is inserted at `start_row`, `start_col` (default A1)
+      on *every* sheet of `tgt_path`.
+    • `blank_rows` empty rows are left beneath the block.
+    • The result is saved to `out_path` (or overwrites `tgt_path` if None).
+    """
     src_wb = load_workbook(src_path, data_only=True)
     src_ws = src_wb[src_sheet]
 
-    rows, merges = copy_block(src_ws, src_range)
+    rows, merges, row_heights, src_min_row, src_min_col = _copy_block(
+        src_ws, src_range
+    )
 
     tgt_wb = load_workbook(tgt_path)
+
     for ws in tgt_wb.worksheets:
-        paste_block(ws, rows, merges, blank_rows, copy_style=copy_style)
+        _paste_block(
+            ws,
+            rows=rows,
+            merges=merges,
+            row_heights=row_heights,
+            src_origin=(src_min_row, src_min_col),
+            blank_rows=blank_rows,
+            start_row=start_row,
+            start_col=start_col,
+            copy_style=copy_style,
+        )
 
     save_to = out_path or tgt_path
     tgt_wb.save(save_to)
-    print(f"Template inserted into every sheet → {save_to}")
+    print(f"✅  Header inserted into every sheet → {save_to}")
 
 
-# ---------- example usage ----------
-
-insert_template_block(
-    src_path  = "template.xlsx",   # workbook 1
-    src_sheet = "HeaderSheet",     # sheet holding the block
-    src_range = "A1:L4",           # block to copy
-    tgt_path  = "report.xlsx",     # workbook 2 (each sheet will get the block)
-    out_path  = "report_with_header.xlsx",  # leave None to overwrite
-    blank_rows = 3,                # add 3 empty rows after the header
-)
+# --------------------------------------------------------------------------- #
+#  Example run (remove or adapt in your own script)                           #
+# --------------------------------------------------------------------------- #
+if __name__ == "__main__":
+    insert_template_block(
+        src_path="template.xlsx",
+        src_sheet="Header",
+        src_range="A1:L4",
+        tgt_path="report.xlsx",
+        out_path="report_with_header.xlsx",
+        blank_rows=3,
+        copy_style=True,
+    )
 ```
