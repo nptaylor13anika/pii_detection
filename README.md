@@ -5,6 +5,7 @@ from typing import Tuple
 from openpyxl import load_workbook
 from openpyxl.utils import range_boundaries
 from openpyxl.worksheet.worksheet import Worksheet
+from copy import copy 
 
 def copy_block(src_ws: Worksheet, src_range: str) -> Tuple[list[list], list]:
     """
@@ -31,38 +32,42 @@ def copy_block(src_ws: Worksheet, src_range: str) -> Tuple[list[list], list]:
     return rows, within_block
 
 
-def paste_block(ws: Worksheet, rows, merges, blank_rows: int, start_row: int = 1, start_col: int = 1, copy_style: bool = True):
-    """
-    Insert enough rows, paste `rows` starting at (start_row, start_col),
-    add `blank_rows` beneath, re‑create merged cells & styles if requested.
-    """
-    n_rows   = len(rows)
-    n_cols   = len(rows[0])
-    total_ins = n_rows + blank_rows
-    ws.insert_rows(start_row, total_ins)
-
-    # write values & (optional) styles
-    for r_off, src_row in enumerate(rows):
-        dest_r = start_row + r_off
-        for c_off, src_cell in enumerate(src_row):
-            dest_c = start_col + c_off
-            tgt = ws.cell(dest_r, dest_c, value=src_cell.value)
-            if copy_style:
-                tgt.font          = src_cell.font
-                tgt.fill          = src_cell.fill
-                tgt.border        = src_cell.border
-                tgt.alignment     = src_cell.alignment
-                tgt.number_format = src_cell.number_format
-
-    # re‑create merged ranges (offset for new position)
-    for cr in merges:
-        a, b, c, d = cr.bounds              # original bounds
-        ws.merge_cells(
-            start_row=start_row + (b - cr.min_row),
-            start_column=start_col + (a - cr.min_col),
-            end_row=start_row + (d - cr.min_row),
-            end_column=start_col + (c - cr.min_col),
-        )
+def paste_block(
+        ws,
+        rows,
+        merges,
+        blank_rows,
+        start_row: int = 1,
+        start_col: int = 1,
+        copy_style: bool = True,
+    ):
+        n_rows = len(rows)
+        total_ins = n_rows + blank_rows
+        ws.insert_rows(start_row, total_ins)
+    
+        for r_off, src_row in enumerate(rows):
+            dest_r = start_row + r_off
+            for c_off, src_cell in enumerate(src_row):
+                dest_c = start_col + c_off
+                tgt = ws.cell(dest_r, dest_c, value=src_cell.value)
+    
+                if copy_style:
+                    # ‑‑‑ Make *copies* so they’re hashable ‑‑‑
+                    tgt.font          = copy(src_cell.font)
+                    tgt.fill          = copy(src_cell.fill)
+                    tgt.border        = copy(src_cell.border)
+                    tgt.alignment     = copy(src_cell.alignment)
+                    tgt.number_format = src_cell.number_format  # already a str
+    
+        # Re‑create merged cells (unchanged)
+        for cr in merges:
+            a, b, c, d = cr.bounds
+            ws.merge_cells(
+                start_row=start_row + (b - cr.min_row),
+                start_column=start_col + (a - cr.min_col),
+                end_row=start_row + (d - cr.min_row),
+                end_column=start_col + (c - cr.min_col),
+            )
 
 
 def insert_template_block(
