@@ -1,29 +1,24 @@
-```txt
-You are a crime-normalization assistant.
+```python
+import regex, json
 
-Inputs
-1. Crime Matrix JSON  
-   {<severity tier>: {<category>: [<canonical offense>, …]}}
-2. Applicant Crimes JSON  
-   [
-     { "charge_literal": str, "severity": str, "disposition": str },
-     …
-   ]
-   • Entries may be noisy or repetitive but all describe the **same** underlying charge.
+json_pattern = regex.compile(r'''
+    \{                     # opening brace
+        (?:                # non‑capturing:
+            [^{}]          #   – any char except braces
+          | "(?:\\.|[^"\\])*"   #   – or a quoted string (handles \" escapes)
+          | (?R)           #   – OR a recursive‑call: another {...}
+        )*                 #   … repeated any number of times
+    \}                     # closing brace
+''', regex.VERBOSE | regex.DOTALL)
 
-Task  
-Evaluate the list as a whole and return **one** JSON object:
+text = '''
+    some noise
+    {"user": {"name": "Ada", "roles": ["admin", "editor"]}, "active": true}
+    trailing noise
+'''
 
-{
-  "charge literal": "<concise phrase that captures the common wording of the charge_literal items>",
-  "charge disposition": "<brief summary of the overall disposition(s)>",
-  "cannonical_offense": "<single best-fit canonical offense from the Crime Matrix, or 'Unmapped'>",
-  "rationale": "<≤ 60 words explaining why this offense was chosen>"
-}
-
-Guidelines  
-• Match on meaning; ignore case, punctuation, and abbreviations (“FTA” ≈ “Failure to Appear”).  
-• Do **not** default to higher-severity tiers—choose the closest semantic match.  
-• Do not invent new offenses. If nothing fits, set cannonical_offense to "Unmapped".  
-• Respond with **only** the JSON object—no extra text.
+match = json_pattern.search(text)
+if match:
+    data = json.loads(match.group(0))
+    print(data['user']['roles'])   # ['admin', 'editor']
 ```
